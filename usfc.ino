@@ -27,7 +27,11 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-#define VERSION "0.1.0"
+#define VERSION "0.2.0"
+
+// error codes
+#define SENSOR_NOTFOUND     0xD
+#define SENSOR_READERROR    0xB
 
 // data wire is plugged into port 4 on the Arduino
 #define ONE_WIRE_BUS 4
@@ -40,8 +44,8 @@
 unsigned long poll_ms = 1000;
 
 // temperatures to start fan and max speed
-int start_temp = 32;
-int maxfan_temp = 72;
+char start_temp = 32;
+char maxfan_temp = 72;
 
 // setup a oneWire instance
 OneWire oneWire(ONE_WIRE_BUS);
@@ -50,13 +54,13 @@ DallasTemperature sensors(&oneWire);
 // sensor address
 DeviceAddress sensor;
 
-#define MAX_INPUT_SIZE 31
+#define MAX_INPUT_SIZE 47
 // a string to hold incoming data
 char input_string[MAX_INPUT_SIZE + 1];
 // whether the string is complete
 boolean string_complete = false;
 // current string length
-int string_pos = 0;
+unsigned char string_pos = 0;
 
 // number of rotations in time interval
 unsigned long rotations;
@@ -66,8 +70,34 @@ unsigned char fan_div = 2;
 // monitor mode: 0 - disabled, 1 - one time, 2 - continous
 unsigned char stats = 2;
 
+// echo serial input back
+unsigned char serial_echo = 0;
+
+// number of failed reads
+unsigned char err_count = 0;
+unsigned char max_errors = 16;
+
 void count_rotations() {
     rotations++;
+}
+
+void error_blink(unsigned int errnum) {
+    while (1) {
+        unsigned int code = errnum;
+
+        // error code
+        do {
+            digitalWrite(LED_BUILTIN, code & 1);
+            delay(500);
+            code >>= 1;
+        } while (code);
+
+        // pause
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(2000);
+    }
+
+    exit(-SENSOR_NOTFOUND);
 }
 
 void show_info() {
@@ -79,10 +109,14 @@ void show_info() {
     Serial.print(maxfan_temp);
     Serial.print(", \"polling\": ");
     Serial.print(poll_ms);
+    Serial.print(", \"errlimit\": ");
+    Serial.print(max_errors);
     Serial.print(", \"divider\": ");
     Serial.print(fan_div);
     Serial.print(", \"stats\": ");
     Serial.print(stats);
+    Serial.print(", \"echo\": ");
+    Serial.print(serial_echo);
     Serial.print(", \"uptime\": ");
     Serial.print(millis());
     Serial.println("}");
@@ -123,10 +157,20 @@ void set_value(char *param, long value) {
         Serial.print("{\"divider\": ");
         Serial.print(fan_div);
         Serial.println("}");
+    } else if (strcmp(param, "err") == 0) {
+        max_errors = constrain(value, 1, 3600);
+        Serial.print("{\"errlimit\": ");
+        Serial.print(max_errors);
+        Serial.println("}");
     } else if (strcmp(param, "stats") == 0) {
         stats = constrain(value, 0, 2);
         Serial.print("{\"stats\": ");
         Serial.print(stats);
+        Serial.println("}");
+    } else if (strcmp(param, "echo") == 0) {
+        serial_echo = constrain(value, 0, 1);
+        Serial.print("{\"echo\": ");
+        Serial.print(serial_echo);
         Serial.println("}");
     } else if (strcmp(param, "info") == 0)
         show_info();
@@ -142,6 +186,14 @@ void get_value(char *param) {
         Serial.print(maxfan_temp);
         Serial.println("}");
     } else if (strcmp(param, "poll") == 0) {
+        Serial.print("{\"polling\": ");
+        Serial.print(poll_ms);
+        Serial.println("}");
+    } else if (strcmp(param, "err") == 0) {
+        Serial.print("{\"errlimit\": ");
+        Serial.print(max_errors);
+        Serial.println("}");
+    } else if (strcmp(param, "div") == 0) {
         Serial.print("{\"divider\": ");
         Serial.print(fan_div);
         Serial.println("}");
@@ -153,6 +205,10 @@ void get_value(char *param) {
             Serial.print(stats);
             Serial.println("}");
         }
+    } else if (strcmp(param, "echo") == 0) {
+        Serial.print("{\"echo\": ");
+        Serial.print(serial_echo);
+        Serial.println("}");
     } else if (strcmp(param, "info") == 0)
         show_info();
 }
@@ -181,7 +237,8 @@ void setup(void) {
         digitalWrite(LED_BUILTIN, HIGH);
         Serial.println("{\"error\": \"Unable to find address for sensor\"}");
         Serial.flush();
-        exit(-1);
+        analogWrite(PWM_PIN, 255);
+        error_blink(SENSOR_NOTFOUND);
     }
 
     attachInterrupt(0, count_rotations, RISING);
@@ -192,7 +249,7 @@ void setup(void) {
  */
 void loop(void) {
     float temp;
-    int pwm;
+    int pwm = 0;
     unsigned long start_time = millis();
 
     // check for input
@@ -217,21 +274,32 @@ void loop(void) {
 
     // send the command to get temperatures
     sensors.requestTemperatures();
-    // 
     temp = sensors.getTempC(sensor);
 
-    if (temp < start_temp)
-        pwm = 0;
-    else if (temp >= maxfan_temp)
-        pwm = 255;
-    else
-        pwm = 255 * (temp - start_temp) / (maxfan_temp - start_temp);
+    if (temp == DEVICE_DISCONNECTED_C) {
+        Serial.println("{\"error\": \"Unable to read temperature from sensor\"}");
+        err_count++;
+        if (err_count == max_errors) {
+            analogWrite(PWM_PIN, pwm);
+            error_blink(SENSOR_READERROR);
+        }
+    } else {
+        if (err_count > 0)
+            err_count--;
 
-    // set fan speed
-    analogWrite(PWM_PIN, pwm);
-
-    // turn led on when at full speed
-    digitalWrite(LED_BUILTIN, (pwm == 255));
+        if (temp < start_temp)
+            pwm = 0;
+        else if (temp >= maxfan_temp)
+            pwm = 255;
+        else
+            pwm = 255 * (temp - start_temp) / (maxfan_temp - start_temp);
+    
+        // set fan speed
+        analogWrite(PWM_PIN, pwm);
+    
+        // turn led on when at full speed
+        digitalWrite(LED_BUILTIN, (pwm == 255));
+    }
 
     // print stats
     if (stats) {
@@ -241,10 +309,15 @@ void loop(void) {
         Serial.print(rotations / poll_ms * 60 * 1000 / fan_div);
         Serial.print(", \"pwm\": ");
         Serial.print(pwm);
+        Serial.print(", \"err\": ");
+        Serial.print(err_count);
         Serial.println("}");
         if (stats == 1)
             stats = 0;
     }
+
+    // reset rpm count
+    rotations = 0;
 
     // sleep a while
     delay(min(poll_ms - millis() + start_time, poll_ms));
@@ -259,7 +332,7 @@ void serialEvent() {
         // get the new byte
         char chr = (char)Serial.read();
         // if the incoming character is a newline or buffer is full, set a flag
-        if ((chr == '\n') || (string_pos > MAX_INPUT_SIZE)) {
+        if ((chr == '\r') || (string_pos > MAX_INPUT_SIZE)) {
             input_string[string_pos] = '\0';
             string_pos = 0;
             string_complete = true;
@@ -267,4 +340,8 @@ void serialEvent() {
             input_string[string_pos++] = chr;
         }
     }
+    if (!string_complete)
+        input_string[string_pos] = '\0';
+    if (serial_echo)
+        Serial.println(input_string);
 }
