@@ -104,9 +104,9 @@ void show_info() {
     Serial.print("{\"version\": ");
     Serial.print(VERSION);
     Serial.print(", \"start\": ");
-    Serial.print(start_temp);
+    Serial.print(start_temp, DEC);
     Serial.print(", \"threshold\": ");
-    Serial.print(maxfan_temp);
+    Serial.print(maxfan_temp, DEC);
     Serial.print(", \"polling\": ");
     Serial.print(poll_ms);
     Serial.print(", \"errlimit\": ");
@@ -127,24 +127,24 @@ void set_value(char *param, long value) {
         value = constrain(value, 0, 64);
         if (value >= maxfan_temp) {
             Serial.print("{\"start\": ");
-            Serial.print(start_temp);
-            Serial.println(", \"error\": \"Start temperature can't equal or exceed threshold value\"}");
+            Serial.print(start_temp, DEC);
+            Serial.println(", \"error\": \"Starting temperature can't be equal to or exceed threshold value\"}");
         } else {
             start_temp = value;
             Serial.print("{\"start\": ");
-            Serial.print(start_temp);
+            Serial.print(start_temp, DEC);
             Serial.println("}");
         }
     } else if (strcmp(param, "max") == 0) {
         value = constrain(value, 0, 128);
         if (value <= start_temp) {
             Serial.print("{\"threshold\": ");
-            Serial.print(maxfan_temp);
+            Serial.print(maxfan_temp, DEC);
             Serial.println(", \"error\": \"Threshold temperature can't be equal to or lower than starting temperature\"}");
         } else {
             maxfan_temp = value;
             Serial.print("{\"threshold\": ");
-            Serial.print(maxfan_temp);
+            Serial.print(maxfan_temp, DEC);
             Serial.println("}");
         }
     } else if (strcmp(param, "poll") == 0) {
@@ -179,11 +179,11 @@ void set_value(char *param, long value) {
 void get_value(char *param) {
     if (strcmp(param, "start") == 0) {
         Serial.print("{\"start\": ");
-        Serial.print(start_temp);
+        Serial.print(start_temp, DEC);
         Serial.println("}");
     } else if (strcmp(param, "max") == 0) {
         Serial.print("{\"threshold\": ");
-        Serial.print(maxfan_temp);
+        Serial.print(maxfan_temp, DEC);
         Serial.println("}");
     } else if (strcmp(param, "poll") == 0) {
         Serial.print("{\"polling\": ");
@@ -292,7 +292,7 @@ void loop(void) {
         else if (temp >= maxfan_temp)
             pwm = 255;
         else
-            pwm = 255 * (temp - start_temp) / (maxfan_temp - start_temp);
+            pwm = 255.0 * (temp - start_temp) / (maxfan_temp - start_temp);
     
         // set fan speed
         analogWrite(PWM_PIN, pwm);
@@ -306,7 +306,7 @@ void loop(void) {
         Serial.print("{\"temp\": ");
         Serial.print(temp);
         Serial.print(", \"rpm\": ");
-        Serial.print(rotations / poll_ms * 60 * 1000 / fan_div);
+        Serial.print(60.0 * 1000 / poll_ms * rotations / fan_div);
         Serial.print(", \"pwm\": ");
         Serial.print(pwm);
         Serial.print(", \"err\": ");
