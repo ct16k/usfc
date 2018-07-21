@@ -1,5 +1,5 @@
 D4 - DS18B20 data pin
 D3 - PWM pin
 D2 - RPM pin
-5V - DS18B20 5V, 4.7k to DS18B20 data pin, 10k to RPM pin
-GND - DS18B20 & FAN GND pin
+5V - DS18B20 5V pin, 4.7k to DS18B20 data pin, 10k to RPM pin
+GND - DS18B20 GND pin & FAN GND pin

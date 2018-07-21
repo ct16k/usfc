@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Theodor-Iulian Ciobanu
+ * Copyright (c) 2017-2018, Theodor-Iulian Ciobanu
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -27,11 +27,11 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-#define VERSION "0.2.0"
+#define VERSION "0.3.0"
 
 // error codes
-#define SENSOR_NOTFOUND     0xD
-#define SENSOR_READERROR    0xB
+#define SENSOR_NOTFOUND  0xD
+#define SENSOR_READERROR 0xB
 
 // data wire is plugged into port 4 on the Arduino
 #define ONE_WIRE_BUS 4
@@ -41,11 +41,26 @@
 #define RPM_PIN 2
 
 // polling interval
+#define MIN_POLL_INTERVAL 0
+#define MAX_POLL_INTERVAL 3600000
 unsigned long poll_ms = 1000;
 
-// temperatures to start fan and max speed
+// temperature limits
+#define MIN_START_TEMP 0
+#define MAX_START_TEMP 64
+#define MIN_MAX_TEMP   0
+#define MAX_MAX_TEMP   128
+// temperatures to start fan and for max speed
 char start_temp = 32;
-char maxfan_temp = 72;
+char maxfan_temp = 52;
+char delta_temp = maxfan_temp - start_temp;
+
+// cooling mode: 0 - quiet (logarithmic), 1 - default (linear), 2 - performance (exponential)
+unsigned char mode = 1;
+float log_b = log(255 / 0.4) / (float)delta_temp;
+float log_a = (float)255 / exp(log_b * maxfan_temp);
+float exp_a = (255 - 0.4) / log((float)maxfan_temp / start_temp);
+float exp_b = exp(255 / exp_a) / (float)maxfan_temp;
 
 // setup a oneWire instance
 OneWire oneWire(ONE_WIRE_BUS);
@@ -64,7 +79,9 @@ unsigned char string_pos = 0;
 
 // number of rotations in time interval
 unsigned long rotations;
-// fan divider: 2 - unipole hall efect sensor, 8 - bipole hall efect sensor
+// fan divider: 2 - unipole hall effect sensor, 8 - bipole hall effect sensor
+#define MIN_FAN_DIV 1
+#define MAX_FAN_DIV 16384
 unsigned char fan_div = 2;
 
 // monitor mode: 0 - disabled, 1 - one time, 2 - continous
@@ -74,6 +91,8 @@ unsigned char stats = 2;
 unsigned char serial_echo = 0;
 
 // number of failed reads
+#define MIN_MAX_ERRORS 1
+#define MAX_MAX_ERRORS 3600
 unsigned char err_count = 0;
 unsigned char max_errors = 16;
 
@@ -97,120 +116,208 @@ void error_blink(unsigned int errnum) {
         delay(2000);
     }
 
-    exit(-SENSOR_NOTFOUND);
+    exit(-errnum);
 }
 
 void show_info() {
-    Serial.print("{\"version\": ");
-    Serial.print(VERSION);
-    Serial.print(", \"start\": ");
+    Serial.print(F("{\"version\": \""
+        VERSION
+        "\", \"mode\": "));
+    Serial.print(mode, DEC);
+    Serial.print(F(", \"start\": "));
     Serial.print(start_temp, DEC);
-    Serial.print(", \"threshold\": ");
+    Serial.print(F(", \"threshold\": "));
     Serial.print(maxfan_temp, DEC);
-    Serial.print(", \"polling\": ");
-    Serial.print(poll_ms);
-    Serial.print(", \"errlimit\": ");
-    Serial.print(max_errors);
-    Serial.print(", \"divider\": ");
-    Serial.print(fan_div);
-    Serial.print(", \"stats\": ");
-    Serial.print(stats);
-    Serial.print(", \"echo\": ");
-    Serial.print(serial_echo);
-    Serial.print(", \"uptime\": ");
-    Serial.print(millis());
+    Serial.print(F(", \"polling\": "));
+    Serial.print(poll_ms, DEC);
+    Serial.print(F(", \"errlimit\": "));
+    Serial.print(max_errors, DEC);
+    Serial.print(F(", \"divider\": "));
+    Serial.print(fan_div, DEC);
+    Serial.print(F(", \"stats\": "));
+    Serial.print(stats, DEC);
+    Serial.print(F(", \"echo\": "));
+    Serial.print(serial_echo, DEC);
+    Serial.print(F(", \"uptime\": "));
+    Serial.print(millis(), DEC);
     Serial.println("}");
 }
 
+void show_help() {
+    Serial.print(F("{\"version\": \""
+        VERSION
+        "\", \"mode\": {\"help\": \"cooling mode\""
+        ", \"values\": {\"0\": \"quiet (logarithmic)\""
+        ", \"1\": \"default (linear)\""
+        ", \"2\": \"performance (exponential)\"}, \"current\": "));
+    Serial.print(mode, DEC);
+    Serial.print(F("}, \"start\": {\"help\": \"temperature to start fan\""
+        ", \"range\": {\"min\": "));
+    Serial.print(MIN_START_TEMP, DEC);
+    Serial.print(F(", \"max\": "));
+    Serial.print(MAX_START_TEMP, DEC);
+    Serial.print(F("}, \"current\": "));
+    Serial.print(start_temp, DEC);
+    Serial.print(F("}, \"threshold\": {\"help\": \"temperature to go full speed\""
+        ", \"range\": {\"min\": "));
+    Serial.print(MIN_MAX_TEMP, DEC);
+    Serial.print(F(", \"max\": "));
+    Serial.print(MAX_MAX_TEMP, DEC);
+    Serial.print(F("}, \"current\": "));
+    Serial.print(maxfan_temp, DEC);
+    Serial.print(F("}, \"polling\": {\"help\": \"temperature polling interval (ms)\""
+        ", \"range\": {\"min\": "));
+    Serial.print(MIN_POLL_INTERVAL, DEC);
+    Serial.print(F(", \"max\": "));
+    Serial.print(MAX_POLL_INTERVAL, DEC);
+    Serial.print(F("}, \"current\": "));
+    Serial.print(poll_ms, DEC);
+    Serial.print(F("}, \"errlimit\": {\"help\": \"number of reading erros before failing to max speed\""
+        ", \"range\": {\"min\": "));
+    Serial.print(MIN_MAX_ERRORS, DEC);
+    Serial.print(F(", \"max\": "));
+    Serial.print(MAX_MAX_ERRORS, DEC);
+    Serial.print(F("}, \"current\": "));
+    Serial.print(max_errors, DEC);
+    Serial.print(F("}, \"divider\": {\"help\": \"fan sensor divider\""
+        ", \"values\": {\"2\": \"unipole hall effect sensor\""
+        ", \"8\": \"bipole hall effect sensor\"}"
+        ", \"range\": {\"min\": "));
+    Serial.print(MIN_FAN_DIV, DEC);
+    Serial.print(F(", \"max\": "));
+    Serial.print(MAX_FAN_DIV, DEC);
+    Serial.print(F("}, \"current\": "));
+    Serial.print(fan_div, DEC);
+    Serial.print(F("}, \"stats\": {\"help\": \"monitor mode\""
+        ", \"values\": {\"0\": \"disabled\""
+        ", \"1\": \"one time\""
+        ", \"2\": \"continuous\"}, \"current\": "));
+    Serial.print(stats, DEC);
+    Serial.print(F("}, \"echo\": {\"help\": \"echo serial input back\""
+        ", \"values\": {\"0\": \"disabled\""
+        ", \"1\": \"enabled\"}, \"current\": "));
+    Serial.print(serial_echo, DEC);
+    Serial.print(F("}, \"uptime\": {\"help\": \"uptime (ms)\"}, \"current\": "));
+    Serial.print(millis(), DEC);
+    Serial.println(F("}"));
+}
+
 void set_value(char *param, long value) {
-    if (strcmp(param, "start") == 0) {
-        value = constrain(value, 0, 64);
+    if (strcmp(param, "mode") == 0) {
+        mode = constrain(value, 0, 2);
+        Serial.print(F("{\"mode\": "));
+        Serial.print(mode);
+        Serial.println(F("}"));
+    } else if (strcmp(param, "start") == 0) {
+        value = constrain(value, MIN_START_TEMP, MAX_START_TEMP);
         if (value >= maxfan_temp) {
-            Serial.print("{\"start\": ");
+            Serial.print(F("{\"start\": "));
             Serial.print(start_temp, DEC);
-            Serial.println(", \"error\": \"Starting temperature can't be equal to or exceed threshold value\"}");
+            Serial.println(F(", \"error\": \"Starting temperature can't be equal to or exceed threshold value\"}"));
         } else {
             start_temp = value;
-            Serial.print("{\"start\": ");
+
+            delta_temp = maxfan_temp - start_temp;
+            log_b = log(255 / 0.4) / (float)delta_temp;
+            log_a = (float)255 / exp(log_b * maxfan_temp);
+            exp_a = (255 - 0.4) / log((float)maxfan_temp / start_temp);
+            exp_b = exp(255 / exp_a) / (float)maxfan_temp;
+
+            Serial.print(F("{\"start\": "));
             Serial.print(start_temp, DEC);
-            Serial.println("}");
+            Serial.println(F("}"));
         }
     } else if (strcmp(param, "max") == 0) {
-        value = constrain(value, 0, 128);
+        value = constrain(value, MIN_MAX_TEMP, MAX_MAX_TEMP);
         if (value <= start_temp) {
-            Serial.print("{\"threshold\": ");
+            Serial.print(F("{\"threshold\": "));
             Serial.print(maxfan_temp, DEC);
-            Serial.println(", \"error\": \"Threshold temperature can't be equal to or lower than starting temperature\"}");
+            Serial.println(F(", \"error\": \"Threshold temperature can't be equal to or lower than starting temperature\"}"));
         } else {
             maxfan_temp = value;
-            Serial.print("{\"threshold\": ");
+
+            delta_temp = maxfan_temp - start_temp;
+            log_b = log(255 / 0.4) / (float)delta_temp;
+            log_a = (float)255 / exp(log_b * maxfan_temp);
+            exp_a = (255 - 0.4) / log((float)maxfan_temp / start_temp);
+            exp_b = exp(255 / exp_a) / (float)maxfan_temp;
+
+            Serial.print(F("{\"threshold\": "));
             Serial.print(maxfan_temp, DEC);
-            Serial.println("}");
+            Serial.println(F("}"));
         }
     } else if (strcmp(param, "poll") == 0) {
-        poll_ms = (unsigned long)constrain(value, 0, 3600);
-        Serial.print("{\"polling\": ");
-        Serial.print(poll_ms);
-        Serial.println("}");
+        poll_ms = (unsigned long)constrain(value, MIN_POLL_INTERVAL, MAX_POLL_INTERVAL);
+        Serial.print(F("{\"polling\": "));
+        Serial.print(poll_ms, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "div") == 0) {
-        fan_div = constrain(value, 1, 16384);
-        Serial.print("{\"divider\": ");
-        Serial.print(fan_div);
-        Serial.println("}");
+        fan_div = constrain(value, MIN_FAN_DIV, MAX_FAN_DIV);
+        Serial.print(F("{\"divider\": "));
+        Serial.print(fan_div, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "err") == 0) {
-        max_errors = constrain(value, 1, 3600);
-        Serial.print("{\"errlimit\": ");
-        Serial.print(max_errors);
-        Serial.println("}");
+        max_errors = constrain(value, MIN_MAX_ERRORS, MAX_MAX_ERRORS);
+        Serial.print(F("{\"errlimit\": "));
+        Serial.print(max_errors, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "stats") == 0) {
         stats = constrain(value, 0, 2);
-        Serial.print("{\"stats\": ");
-        Serial.print(stats);
-        Serial.println("}");
+        Serial.print(F("{\"stats\": "));
+        Serial.print(stats, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "echo") == 0) {
         serial_echo = constrain(value, 0, 1);
-        Serial.print("{\"echo\": ");
-        Serial.print(serial_echo);
-        Serial.println("}");
+        Serial.print(F("{\"echo\": "));
+        Serial.print(serial_echo, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "info") == 0)
         show_info();
+    else if (strcmp(param, "help") == 0)
+        show_help();
 }
 
 void get_value(char *param) {
-    if (strcmp(param, "start") == 0) {
-        Serial.print("{\"start\": ");
+    if (strcmp(param, "mode") == 0) {
+        Serial.print(F("{\"mode\": "));
+        Serial.print(mode, DEC);
+        Serial.println(F("}"));
+    } else if (strcmp(param, "start") == 0) {
+        Serial.print(F("{\"start\": "));
         Serial.print(start_temp, DEC);
-        Serial.println("}");
+        Serial.println(F("}"));
     } else if (strcmp(param, "max") == 0) {
-        Serial.print("{\"threshold\": ");
+        Serial.print(F("{\"threshold\": "));
         Serial.print(maxfan_temp, DEC);
-        Serial.println("}");
+        Serial.println(F("}"));
     } else if (strcmp(param, "poll") == 0) {
-        Serial.print("{\"polling\": ");
-        Serial.print(poll_ms);
-        Serial.println("}");
+        Serial.print(F("{\"polling\": "));
+        Serial.print(poll_ms, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "err") == 0) {
-        Serial.print("{\"errlimit\": ");
-        Serial.print(max_errors);
-        Serial.println("}");
+        Serial.print(F("{\"errlimit\": "));
+        Serial.print(max_errors, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "div") == 0) {
-        Serial.print("{\"divider\": ");
-        Serial.print(fan_div);
-        Serial.println("}");
+        Serial.print(F("{\"divider\": "));
+        Serial.print(fan_div, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "stats") == 0) {
         if (stats == 0)
             stats = 1;
         else {
-            Serial.print("{\"stats\": ");
+            Serial.print(F("{\"stats\": "));
             Serial.print(stats);
-            Serial.println("}");
+            Serial.println(F("}"));
         }
     } else if (strcmp(param, "echo") == 0) {
-        Serial.print("{\"echo\": ");
-        Serial.print(serial_echo);
-        Serial.println("}");
+        Serial.print(F("{\"echo\": "));
+        Serial.print(serial_echo, DEC);
+        Serial.println(F("}"));
     } else if (strcmp(param, "info") == 0)
         show_info();
+    else if (strcmp(param, "help") == 0)
+        show_help();
 }
 
 /*
@@ -224,9 +331,9 @@ void setup(void) {
 
     // start serial port
     Serial.begin(9600);
-    Serial.print("{\"info\": \"Microserver Fan Controller v");
-    Serial.print(VERSION);
-    Serial.println("\"}");
+    Serial.println(F("{\"info\": \"Microserver Fan Controller v"
+        VERSION
+        "\"}"));
     show_info();
 
     // start up the library
@@ -235,7 +342,7 @@ void setup(void) {
     // you can have more than one IC on the same bus; 0 refers to the first IC on the wire
     if (!sensors.getAddress(sensor, 0)) {
         digitalWrite(LED_BUILTIN, HIGH);
-        Serial.println("{\"error\": \"Unable to find address for sensor\"}");
+        Serial.println(F("{\"error\": \"Unable to find address for sensor\"}"));
         Serial.flush();
         analogWrite(PWM_PIN, 255);
         error_blink(SENSOR_NOTFOUND);
@@ -249,7 +356,7 @@ void setup(void) {
  */
 void loop(void) {
     float temp;
-    int pwm = 0;
+    int pwm = 255;
     unsigned long start_time = millis();
 
     // check for input
@@ -277,7 +384,7 @@ void loop(void) {
     temp = sensors.getTempC(sensor);
 
     if (temp == DEVICE_DISCONNECTED_C) {
-        Serial.println("{\"error\": \"Unable to read temperature from sensor\"}");
+        Serial.println(F("{\"error\": \"Unable to read temperature from sensor\"}"));
         err_count++;
         if (err_count == max_errors) {
             analogWrite(PWM_PIN, pwm);
@@ -292,7 +399,16 @@ void loop(void) {
         else if (temp >= maxfan_temp)
             pwm = 255;
         else
-            pwm = 255.0 * (temp - start_temp) / (maxfan_temp - start_temp);
+            switch(mode) {
+                case 0: // logarithmic
+                    pwm = log_a * exp(log_b * temp);
+                    break;
+                case 2: // exponential
+                    pwm = exp_a * log(exp_b * temp);
+                    break;
+                default: // linear
+                    pwm = (float)255 * (temp - start_temp) / delta_temp;
+            }
     
         // set fan speed
         analogWrite(PWM_PIN, pwm);
@@ -306,7 +422,7 @@ void loop(void) {
         Serial.print("{\"temp\": ");
         Serial.print(temp);
         Serial.print(", \"rpm\": ");
-        Serial.print(60.0 * 1000 / poll_ms * rotations / fan_div);
+        Serial.print((float)60 * 1000 / poll_ms * rotations / fan_div, 0);
         Serial.print(", \"pwm\": ");
         Serial.print(pwm);
         Serial.print(", \"err\": ");
